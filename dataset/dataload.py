@@ -23,17 +23,21 @@ class TextInstance(object):
         self.orient = orient
         self.text = text
 
-        self.points = []
+        remove_points = []
 
-        # remove point if area is almost unchanged after removing
-        ori_area = cv2.contourArea(points)
-        for p in range(len(points)):
-            index = list(range(len(points)))
-            index.remove(p)
-            area = cv2.contourArea(points[index])
-            if np.abs(ori_area - area) / ori_area > 0.017:
-                self.points.append(points[p])
-        self.points = np.array(self.points)
+        if len(points) > 4:
+            # remove point if area is almost unchanged after removing it
+            ori_area = cv2.contourArea(points)
+            for p in range(len(points)):
+                # attempt to remove p
+                index = list(range(len(points)))
+                index.remove(p)
+                area = cv2.contourArea(points[index])
+                if np.abs(ori_area - area) / ori_area < 0.017 and len(points) - len(remove_points) > 4:
+                    remove_points.append(p)
+            self.points = np.array([point for i, point in enumerate(points) if i not in remove_points])
+        else:
+            self.points = np.array(points)
 
     def find_bottom_and_sideline(self):
         self.bottoms = find_bottom(self.points)  # find two bottoms of this Text
@@ -112,7 +116,7 @@ class TextDataset(data.Dataset):
         mask[rr, cc] = value
 
     def make_text_center_line(self, sideline1, sideline2, center_line, radius, \
-                              tcl_mask, radius_map, sin_map, cos_map, expand=0.2, shrink=1):
+                              tcl_mask, radius_map, sin_map, cos_map, expand=0.3, shrink=1):
 
         # TODO: shrink 1/2 * radius at two line end
         for i in range(shrink, len(center_line) - 1 - shrink):
@@ -163,9 +167,19 @@ class TextDataset(data.Dataset):
         # to pytorch channel sequence
         image = image.transpose(2, 0, 1)
 
+        points = np.zeros((cfg.max_annotation, cfg.max_points, 2))
+        length = np.zeros(cfg.max_annotation, dtype=int)
+
+        for i, polygon in enumerate(polygons):
+            pts = polygon.points
+            points[i, :pts.shape[0]] = polygon.points
+            length[i] = pts.shape[0]
+
         meta = {
             'image_id': image_id,
             'image_path': image_path,
+            'annotation': points,
+            'n_annotation': length,
             'Height': H,
             'Width': W
         }

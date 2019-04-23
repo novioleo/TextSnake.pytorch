@@ -14,8 +14,8 @@ class TextDetector(object):
         generate an inner point of input polygon using mean of x coordinate by:
         1. calculate mean of x coordinate(xmean)
         2. calculate maximum and minimum of y coordinate(ymax, ymin)
-        2. iterate for each y in range (ymin, ymax), find first segment in the polygon
-        3. calculate means of segment
+        3. iterate for each y in range (ymin, ymax), find first segment in the polygon
+        4. calculate means of segment
         :param cont: input polygon
         :return:
         """
@@ -48,13 +48,15 @@ class TextDetector(object):
                         if cv2.pointPolygonTest(cont, (test_pt[0], test_pt[1]), False) > 0:
                             return test_pt
 
-    def centerlize(self, x, y, tangent_cos, tangent_sin, mask, stride=1):
+    def in_contour(self, cont, point):
+        x, y = point
+        return cv2.pointPolygonTest(cont, (x, y), False) > 0
+
+    def centerlize(self, x, y, H, W, tangent_cos, tangent_sin, tcl_contour, stride=1.):
         """
         centralizing (x, y) using tangent line and normal line.
         :return:
         """
-
-        H, W = mask.shape
 
         # calculate normal sin and cos
         normal_cos = -tangent_sin
@@ -62,7 +64,7 @@ class TextDetector(object):
 
         # find upward
         _x, _y = x, y
-        while mask[int(_y), int(_x)]:
+        while self.in_contour(tcl_contour, (_x, _y)):
             _x = _x + normal_cos * stride
             _y = _y + normal_sin * stride
             if int(_x) >= W or int(_x) < 0 or int(_y) >= H or int(_y) < 0:
@@ -71,7 +73,7 @@ class TextDetector(object):
 
         # find downward
         _x, _y = x, y
-        while mask[int(_y), int(_x)]:
+        while self.in_contour(tcl_contour, (_x, _y)):
             _x = _x - normal_cos * stride
             _y = _y - normal_sin * stride
             if int(_x) >= W or int(_x) < 0 or int(_y) >= H or int(_y) < 0:
@@ -83,44 +85,41 @@ class TextDetector(object):
 
         return center
 
-    def mask_to_tcl(self, pred_sin, pred_cos, pred_radii, tcl_mask, init_xy, direct=1):
+    def mask_to_tcl(self, pred_sin, pred_cos, pred_radii, tcl_contour, init_xy, direct=1):
         """
         Iteratively find center line in tcl mask using initial point (x, y)
         :param pred_sin: predict sin map
         :param pred_cos: predict cos map
-        :param tcl_mask: predict tcl mask
+        :param tcl_contour: predict tcl contour
         :param init_xy: initial (x, y)
         :param direct: direction [-1|1]
         :return:
         """
 
         H, W = pred_sin.shape
-        x_init, y_init = init_xy
+        x_shift, y_shift = init_xy
 
-        sin = pred_sin[int(y_init), int(x_init)]
-        cos = pred_cos[int(y_init), int(x_init)]
-        radii = pred_radii[int(y_init), int(x_init)]
-
-        x_shift, y_shift = self.centerlize(x_init, y_init, cos, sin, tcl_mask)
         result = []
+        max_attempt = 200
+        attempt = 0
 
-        while tcl_mask[int(y_shift), int(x_shift)]:
+        while self.in_contour(tcl_contour, (x_shift, y_shift)):
 
-            result.append(np.array([x_shift, y_shift, radii]))
-            x, y = x_shift, y_shift
+            attempt += 1
 
-            sin = pred_sin[int(y), int(x)]
-            cos = pred_cos[int(y), int(x)]
-
-            x_c, y_c = self.centerlize(x, y, cos, sin, tcl_mask)
+            sin = pred_sin[int(y_shift), int(x_shift)]
+            cos = pred_cos[int(y_shift), int(x_shift)]
+            x_c, y_c = self.centerlize(x_shift, y_shift, H, W, cos, sin, tcl_contour)
 
             sin_c = pred_sin[int(y_c), int(x_c)]
             cos_c = pred_cos[int(y_c), int(x_c)]
-            radii = pred_radii[int(y_c), int(x_c)]
+            radii_c = pred_radii[int(y_c), int(x_c)]
+
+            result.append(np.array([x_c, y_c, radii_c * 1.3]))
 
             # shift stride
-            for shrink in np.arange(0.5, 0.0, -0.1):  # [0.5, 0.4, 0.3, 0.2, 0.1]
-                t = shrink * radii   # stride = +/- 0.5 * [sin|cos](theta), if new point is outside, shrink it until shrink < 0.1, hit ends
+            for shrink in [1/2., 1/4., 1/8., 1/16., 1/32.]:
+                t = shrink * radii_c   # stride = +/- 0.5 * [sin|cos](theta), if new point is outside, shrink it until shrink < 1/32., hit ends
                 x_shift_pos = x_c + cos_c * t * direct  # positive direction
                 y_shift_pos = y_c + sin_c * t * direct  # positive direction
                 x_shift_neg = x_c - cos_c * t * direct  # negative direction
@@ -141,10 +140,12 @@ class TextDetector(object):
                 if int(x_shift) >= W or int(x_shift) < 0 or int(y_shift) >= H or int(y_shift) < 0:
                     continue
                 # found an inside point
-                if tcl_mask[int(y_shift), int(x_shift)]:
+                if self.in_contour(tcl_contour, (x_shift, y_shift)):
                     break
             # if out of bounds, break
             if int(x_shift) >= W or int(x_shift) < 0 or int(y_shift) >= H or int(y_shift) < 0:
+                break
+            if attempt > max_attempt:
                 break
         return result
 
@@ -164,9 +165,6 @@ class TextDetector(object):
         _, conts, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
         for cont in conts:
-            # remove small regions
-            if cv2.contourArea(cont) < 20:
-                continue
 
             # find an inner point of polygon
             init = self.find_innerpoint(cont)
@@ -177,30 +175,42 @@ class TextDetector(object):
             x_init, y_init = init
 
             # find left tcl
-            tcl_left = self.mask_to_tcl(sin_pred, cos_pred, radii_pred, tcl_pred, (x_init, y_init), direct=1)
+            tcl_left = self.mask_to_tcl(sin_pred, cos_pred, radii_pred, cont, (x_init, y_init), direct=1)
             tcl_left = np.array(tcl_left)
             # find right tcl
-            tcl_right = self.mask_to_tcl(sin_pred, cos_pred, radii_pred, tcl_pred, (x_init, y_init), direct=-1)
+            tcl_right = self.mask_to_tcl(sin_pred, cos_pred, radii_pred, cont, (x_init, y_init), direct=-1)
             tcl_right = np.array(tcl_right)
             # concat
             tcl = np.concatenate([tcl_left[::-1][:-1], tcl_right])
             all_tcls.append(tcl)
 
-        return all_tcls
+        return all_tcls, conts
 
     def detect(self, tr_pred, tcl_pred, sin_pred, cos_pred, radii_pred):
+        """
+        Input: FCN output, Output: text detection after post-processing
+
+        :param tr_pred: (tensor), text region prediction, (2, H, W)
+        :param tcl_pred: (tensor), text center line prediction, (2, H, W)
+        :param sin_pred: (tensor), sin prediction, (H, W)
+        :param cos_pred: (tensor), cos line prediction, (H, W)
+        :param radii_pred: (tensor), radii prediction, (H, W)
+
+        :return:
+            (list), tcl array: (n, 3), 3 denotes (x, y, radii)
+        """
 
         # thresholding
         tr_pred_mask = tr_pred[1] > self.tr_thresh
         tcl_pred_mask = tcl_pred[1] > self.tcl_thresh
 
         # multiply TR and TCL
-        tcl = tcl_pred_mask * tr_pred_mask
+        tcl_mask = tcl_pred_mask * tr_pred_mask
 
         # regularize
         sin_pred, cos_pred = regularize_sin_cos(sin_pred, cos_pred)
 
         # find tcl in each predicted mask
-        detect_result = self.build_tcl(tcl, sin_pred, cos_pred, radii_pred)
+        detect_result, tcl_contour = self.build_tcl(tcl_mask, sin_pred, cos_pred, radii_pred)
 
-        return detect_result
+        return detect_result, tcl_contour

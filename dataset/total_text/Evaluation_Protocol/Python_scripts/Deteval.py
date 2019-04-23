@@ -1,17 +1,27 @@
 # modified from https://github.com/cs-chan/Total-Text-Dataset/blob/master/Evaluation_Protocol/Python_scripts/Deteval.py
+import numpy as np
 
 from os import listdir
 from scipy import io
-import numpy as np
 from polygon_wrapper import iod
 from polygon_wrapper import area_of_intersection
 from polygon_wrapper import area
+import argparse
+from tqdm import tqdm
+
+parser = argparse.ArgumentParser()
+
+# basic opts
+parser.add_argument('exp_name', type=str, help='Model output directory')
+parser.add_argument('--tr', type=float, default=0.7, help='Recall threshold')
+parser.add_argument('--tp', type=float, default=0.6, help='Precision threshold')
+args = parser.parse_args()
 
 """
 Input format: y0,x0, ..... yn,xn. Each detection is separated by the end of line token ('\n')'
 """
 
-input_dir = 'output'
+input_dir = 'output/{}'.format(args.exp_name)
 gt_dir = 'data/total-text/gt/Test'
 fid_path = 'Python_Pascal_result_last_check.txt'
 
@@ -36,7 +46,7 @@ def gt_reading_mod(gt_dir, gt_id):
 
 def detection_filtering(detections, groundtruths, threshold=0.5):
     for gt_id, gt in enumerate(groundtruths):
-        if (gt[5].size == 0 or gt[5] == '#') and (gt[1].shape[1] > 1):
+        if (gt[5] == '#') and (gt[1].shape[1] > 1):
             gt_x = list(map(int, np.squeeze(gt[1])))
             gt_y = list(map(int, np.squeeze(gt[3])))
             for det_id, detection in enumerate(detections):
@@ -72,15 +82,15 @@ global_fp = 0
 global_fn = 0
 global_sigma = []
 global_tau = []
-tr = 0.6
-tp = 0.6
+tr = args.tr
+tp = args.tp
 fsc_k = 0.8
 k = 2
 ###############################################################################
 
-for i, input_id in enumerate(allInputs):
+for i, input_id in enumerate(tqdm(allInputs)):
     if (input_id != '.DS_Store'):
-        print(i, input_id)
+        # print(i, input_id)
         detections = input_reading_mod(input_dir, input_id)
         groundtruths = gt_reading_mod(gt_dir, input_id)
         detections = detection_filtering(detections, groundtruths)  # filters detections overlapping with DC area
@@ -94,14 +104,13 @@ for i, input_id in enumerate(allInputs):
                 for det_id, detection in enumerate(detections):
                     detection = detection.split(',')
                     detection = list(map(int, detection[:-2]))
-                    det_x = detection[0::2]
-                    det_y = detection[1::2]
+                    det_y = detection[0::2]
+                    det_x = detection[1::2]
                     gt_x = list(map(int, np.squeeze(gt[1])))
                     gt_y = list(map(int, np.squeeze(gt[3])))
 
                     local_sigma_table[gt_id, det_id] = sigma_calculation(det_x, det_y, gt_x, gt_y)
                     local_tau_table[gt_id, det_id] = tau_calculation(det_x, det_y, gt_x, gt_y)
-
         global_sigma.append(local_sigma_table)
         global_tau.append(local_tau_table)
 
@@ -109,7 +118,6 @@ global_accumulative_recall = 0
 global_accumulative_precision = 0
 total_num_gt = 0
 total_num_det = 0
-
 
 def one_to_one(local_sigma_table, local_tau_table, local_accumulative_recall,
                local_accumulative_precision, global_accumulative_recall, global_accumulative_precision,
@@ -207,8 +215,10 @@ def many_to_many(local_sigma_table, local_tau_table, local_accumulative_recall,
                 local_accumulative_precision = local_accumulative_precision + fsc_k
     return local_accumulative_recall, local_accumulative_precision, global_accumulative_recall, global_accumulative_precision, gt_flag, det_flag
 
+fid = open(fid_path, 'w')
+
 for idx in range(len(global_sigma)):
-    print(allInputs[idx])
+
     local_sigma_table = global_sigma[idx]
     local_tau_table = global_tau[idx]
 
@@ -244,10 +254,6 @@ for idx in range(len(global_sigma)):
                                     global_accumulative_recall, global_accumulative_precision,
                                     gt_flag, det_flag)
 
-    print('local', local_accumulative_recall, local_accumulative_precision)
-    print('global', global_accumulative_recall, global_accumulative_precision)
-
-    fid = open(fid_path, 'a+')
     try:
         local_precision = local_accumulative_precision / num_det
     except ZeroDivisionError:
@@ -258,9 +264,10 @@ for idx in range(len(global_sigma)):
     except ZeroDivisionError:
         local_recall = 0
 
-    temp = ('%s: /Precision = %s / Recall = %s\n' % (allInputs[idx], str(local_precision), str(local_recall)))
-    fid.write(temp)
-    fid.close()
+    str_write = ('%s: Precision = %.4f - Recall = %.4f\n' % (allInputs[idx], local_precision, local_recall))
+    fid.write(str_write)
+fid.close()
+
 try:
     recall = global_accumulative_recall / total_num_gt
 except ZeroDivisionError:
@@ -277,8 +284,11 @@ except ZeroDivisionError:
     f_score = 0
 
 fid = open(fid_path, 'a')
-temp = ('Precision = %s / Recall = %s\n' %(str(precision), str(recall)))
-fid.write(temp)
+str_write = ('Precision = %.4f - Recall = %.4f - Fscore = %.4f\n' % (precision, recall, f_score))
+fid.write(str_write)
 fid.close()
 
+print('Input: {}'.format(input_dir))
+print('Config: tr: {} - tp: {}'.format(tr, tp))
+print(str_write)
 print('Done.')

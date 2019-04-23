@@ -20,13 +20,26 @@ config.lr = 1e-4
 # using GPU
 config.cuda = True
 
-config.vis_num = 3
-
 config.n_disk = 15
 
 config.output_dir = 'output'
 
 config.input_size = 512
+
+# max polygon per image
+config.max_annotation = 200
+
+# max point per polygon
+config.max_points = 20
+
+# use hard examples (annotated as '#')
+config.use_hard = True
+
+# demo tr threshold
+config.tr_thresh = 0.4
+
+# demo tcl threshold
+config.tcl_thresh = 0.5
 
 def update_config(config, extra_config):
     for k, v in vars(extra_config).items():
